@@ -401,6 +401,93 @@ fn change_type_to_reason(change_type: &ChangeType) -> &'static str {
     }
 }
 
+pub fn chain(
+    root_path: &Path,
+    start_name: &str,
+    end_name: &str,
+    shortest: bool,
+    max_paths: usize,
+    max_depth: usize,
+) -> Result<()> {
+    let result = scan_and_parse_files(root_path, false)?;
+    let graph = DependencyGraph::from_entities(&result.entities);
+
+    // Find entity IDs by exact name match
+    let start_matches: Vec<&Entity> = result
+        .entities
+        .values()
+        .filter(|e| e.name == start_name)
+        .collect();
+
+    let end_matches: Vec<&Entity> = result
+        .entities
+        .values()
+        .filter(|e| e.name == end_name)
+        .collect();
+
+    // Validate entities exist
+    if start_matches.is_empty() {
+        anyhow::bail!("Entity '{}' not found", start_name);
+    }
+    if end_matches.is_empty() {
+        anyhow::bail!("Entity '{}' not found", end_name);
+    }
+
+    // Find chains between all matching start and end entities
+    let mut found_any = false;
+    let mut total_paths = 0;
+
+    for start_entity in &start_matches {
+        for end_entity in &end_matches {
+            if shortest {
+                // Only find the shortest path
+                if let Some(path_ids) = graph.find_path(&start_entity.id, &end_entity.id) {
+                    let names: Vec<String> = path_ids
+                        .iter()
+                        .filter_map(|id| result.entities.get(id).map(|e| e.name.clone()))
+                        .collect();
+                    println!("{}", names.join(" -> "));
+                    found_any = true;
+                }
+            } else {
+                // Find all paths (up to remaining max)
+                let remaining = max_paths.saturating_sub(total_paths);
+                if remaining == 0 {
+                    break;
+                }
+                let all_paths =
+                    graph.find_all_paths(&start_entity.id, &end_entity.id, remaining, max_depth);
+                for path_ids in all_paths {
+                    let names: Vec<String> = path_ids
+                        .iter()
+                        .filter_map(|id| result.entities.get(id).map(|e| e.name.clone()))
+                        .collect();
+                    println!("{}", names.join(" -> "));
+                    found_any = true;
+                    total_paths += 1;
+                }
+            }
+        }
+        if !shortest && total_paths >= max_paths {
+            break;
+        }
+    }
+
+    if !found_any {
+        println!(
+            "No dependency chain found between '{}' and '{}'",
+            start_name, end_name
+        );
+    } else if !shortest && total_paths >= max_paths {
+        eprintln!(
+            "Note: Output limited to {} paths. Use --max-paths to adjust.",
+            max_paths
+        );
+    }
+
+    Ok(())
+}
+
 fn print_affected_entity(entity: &Entity, reason: &str) {
     println!("Name: {}", entity.name);
     println!("Type: {}", entity.entity_type);
@@ -411,7 +498,7 @@ fn print_affected_entity(entity: &Entity, reason: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::parser::{Parser, strip_comments};
+    use super::parser::{worker_filename_to_entity_name, Parser, strip_comments};
     use std::path::Path;
 
     #[test]
@@ -790,5 +877,79 @@ import { Bar } from './bar';"#;
         let result = super::find_test_files_in_directories(&dirs);
 
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_worker_filename_to_entity_name_kebab_case() {
+        let result = worker_filename_to_entity_name("/path/to/planner-overview.worker.ts");
+        assert_eq!(result, Some("PlannerOverviewWorker".to_string()));
+    }
+
+    #[test]
+    fn test_worker_filename_to_entity_name_snake_case() {
+        let result = worker_filename_to_entity_name("/path/to/my_worker.worker.ts");
+        assert_eq!(result, Some("MyWorkerWorker".to_string()));
+    }
+
+    #[test]
+    fn test_worker_filename_to_entity_name_simple() {
+        let result = worker_filename_to_entity_name("/path/to/simple.worker.ts");
+        assert_eq!(result, Some("SimpleWorker".to_string()));
+    }
+
+    #[test]
+    fn test_worker_filename_to_entity_name_mixed_separators() {
+        let result = worker_filename_to_entity_name("/path/to/my-cool_worker.worker.ts");
+        assert_eq!(result, Some("MyCoolWorkerWorker".to_string()));
+    }
+
+    #[test]
+    fn test_worker_filename_to_entity_name_non_worker_file() {
+        let result = worker_filename_to_entity_name("/path/to/regular.ts");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_worker_import() {
+        let content = r#"const worker = new Worker(new URL('../../workers/planner-overview.worker', import.meta.url));"#;
+        let root_path = Path::new("/project");
+        let file_path = "/project/src/components/planning.ts";
+
+        let parser = Parser::new(root_path);
+        let imports = parser.extract_imports(content, file_path);
+
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].name, "PlannerOverviewWorker");
+        assert!(imports[0].path.contains("planner-overview.worker"));
+    }
+
+    #[test]
+    fn test_extract_worker_import_with_ts_extension() {
+        let content = r#"const worker = new Worker(new URL('./my-worker.worker.ts', import.meta.url));"#;
+        let root_path = Path::new("/project");
+        let file_path = "/project/src/index.ts";
+
+        let parser = Parser::new(root_path);
+        let imports = parser.extract_imports(content, file_path);
+
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].name, "MyWorkerWorker");
+    }
+
+    #[test]
+    fn test_extract_multiple_worker_imports() {
+        let content = r#"
+const worker1 = new Worker(new URL('./worker-a.worker', import.meta.url));
+const worker2 = new Worker(new URL('./worker-b.worker', import.meta.url));
+"#;
+        let root_path = Path::new("/project");
+        let file_path = "/project/src/index.ts";
+
+        let parser = Parser::new(root_path);
+        let imports = parser.extract_imports(content, file_path);
+
+        assert_eq!(imports.len(), 2);
+        assert_eq!(imports[0].name, "WorkerAWorker");
+        assert_eq!(imports[1].name, "WorkerBWorker");
     }
 }

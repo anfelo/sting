@@ -82,6 +82,150 @@ impl DependencyGraph {
         index
     }
 
+    /// Find the shortest path from start_id to end_id following dependency edges.
+    /// Uses BFS to find the shortest path.
+    /// Returns Some(Vec<String>) with entity IDs in path order, or None if no path exists.
+    pub fn find_path(&self, start_id: &str, end_id: &str) -> Option<Vec<String>> {
+        if start_id == end_id {
+            return Some(vec![start_id.to_string()]);
+        }
+
+        // Build forward adjacency list: source -> [targets]
+        let mut adjacency: HashMap<String, Vec<String>> = HashMap::new();
+        for edge in &self.edges {
+            adjacency
+                .entry(edge.source.clone())
+                .or_default()
+                .push(edge.target.clone());
+        }
+
+        // BFS to find path
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut queue: VecDeque<Vec<String>> = VecDeque::new();
+
+        visited.insert(start_id.to_string());
+        queue.push_back(vec![start_id.to_string()]);
+
+        while let Some(path) = queue.pop_front() {
+            let current = path.last().unwrap();
+
+            if let Some(neighbors) = adjacency.get(current) {
+                for neighbor in neighbors {
+                    if neighbor == end_id {
+                        let mut result = path.clone();
+                        result.push(neighbor.clone());
+                        return Some(result);
+                    }
+
+                    if !visited.contains(neighbor) {
+                        visited.insert(neighbor.clone());
+                        let mut new_path = path.clone();
+                        new_path.push(neighbor.clone());
+                        queue.push_back(new_path);
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Find all paths from start_id to end_id following dependency edges.
+    /// Uses DFS with backtracking to find all possible paths.
+    /// Stops early if max_paths is reached or path exceeds max_depth.
+    /// Returns a Vec of paths, where each path is a Vec of entity IDs.
+    pub fn find_all_paths(
+        &self,
+        start_id: &str,
+        end_id: &str,
+        max_paths: usize,
+        max_depth: usize,
+    ) -> Vec<Vec<String>> {
+        let mut all_paths = Vec::new();
+
+        if start_id == end_id {
+            return vec![vec![start_id.to_string()]];
+        }
+
+        // Build forward adjacency list: source -> [targets]
+        let mut adjacency: HashMap<String, Vec<String>> = HashMap::new();
+        for edge in &self.edges {
+            adjacency
+                .entry(edge.source.clone())
+                .or_default()
+                .push(edge.target.clone());
+        }
+
+        // DFS with backtracking
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut current_path: Vec<String> = Vec::new();
+
+        self.dfs_all_paths(
+            start_id,
+            end_id,
+            &adjacency,
+            &mut visited,
+            &mut current_path,
+            &mut all_paths,
+            max_paths,
+            max_depth,
+        );
+
+        all_paths
+    }
+
+    fn dfs_all_paths(
+        &self,
+        current: &str,
+        end_id: &str,
+        adjacency: &HashMap<String, Vec<String>>,
+        visited: &mut HashSet<String>,
+        current_path: &mut Vec<String>,
+        all_paths: &mut Vec<Vec<String>>,
+        max_paths: usize,
+        max_depth: usize,
+    ) {
+        // Early termination if we've found enough paths
+        if all_paths.len() >= max_paths {
+            return;
+        }
+
+        // Early termination if path is too deep
+        if current_path.len() >= max_depth {
+            return;
+        }
+
+        visited.insert(current.to_string());
+        current_path.push(current.to_string());
+
+        if current == end_id {
+            all_paths.push(current_path.clone());
+        } else if let Some(neighbors) = adjacency.get(current) {
+            for neighbor in neighbors {
+                if !visited.contains(neighbor) {
+                    self.dfs_all_paths(
+                        neighbor,
+                        end_id,
+                        adjacency,
+                        visited,
+                        current_path,
+                        all_paths,
+                        max_paths,
+                        max_depth,
+                    );
+                    // Check again after recursive call
+                    if all_paths.len() >= max_paths {
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Backtrack
+        current_path.pop();
+        visited.remove(current);
+    }
+
     /// Find all entities that consume (depend on) the given target IDs.
     /// If transitive is true, performs BFS to find all transitive consumers.
     /// Returns a set of consumer entity IDs (excluding the original target IDs).
@@ -438,5 +582,328 @@ mod tests {
         assert_eq!(consumers.len(), 2);
         assert!(consumers.contains(&b_id));
         assert!(consumers.contains(&c_id));
+    }
+
+    #[test]
+    fn test_find_path_same_entity() {
+        let mut entities: HashMap<String, Entity> = HashMap::new();
+        let entity = create_entity("A", EntityType::Function, "/src/a.ts", vec![]);
+        let a_id = entity.id.clone();
+        entities.insert(entity.id.clone(), entity);
+
+        let graph = DependencyGraph::from_entities(&entities);
+        let path = graph.find_path(&a_id, &a_id);
+
+        assert!(path.is_some());
+        assert_eq!(path.unwrap(), vec![a_id]);
+    }
+
+    #[test]
+    fn test_find_path_direct_dependency() {
+        let mut entities: HashMap<String, Entity> = HashMap::new();
+
+        // A imports B
+        let entity_b = create_entity("B", EntityType::Function, "/src/b.ts", vec![]);
+        let b_id = entity_b.id.clone();
+        entities.insert(entity_b.id.clone(), entity_b);
+
+        let import_b = ImportInfo::new("B".to_string(), "/src/b.ts".to_string());
+        let entity_a = create_entity("A", EntityType::Function, "/src/a.ts", vec![import_b]);
+        let a_id = entity_a.id.clone();
+        entities.insert(entity_a.id.clone(), entity_a);
+
+        let graph = DependencyGraph::from_entities(&entities);
+        let path = graph.find_path(&a_id, &b_id);
+
+        assert!(path.is_some());
+        let path = path.unwrap();
+        assert_eq!(path.len(), 2);
+        assert_eq!(path[0], a_id);
+        assert_eq!(path[1], b_id);
+    }
+
+    #[test]
+    fn test_find_path_transitive() {
+        let mut entities: HashMap<String, Entity> = HashMap::new();
+
+        // A -> B -> C chain
+        let entity_c = create_entity("C", EntityType::Function, "/src/c.ts", vec![]);
+        let c_id = entity_c.id.clone();
+        entities.insert(entity_c.id.clone(), entity_c);
+
+        let import_c = ImportInfo::new("C".to_string(), "/src/c.ts".to_string());
+        let entity_b = create_entity("B", EntityType::Function, "/src/b.ts", vec![import_c]);
+        let b_id = entity_b.id.clone();
+        entities.insert(entity_b.id.clone(), entity_b);
+
+        let import_b = ImportInfo::new("B".to_string(), "/src/b.ts".to_string());
+        let entity_a = create_entity("A", EntityType::Function, "/src/a.ts", vec![import_b]);
+        let a_id = entity_a.id.clone();
+        entities.insert(entity_a.id.clone(), entity_a);
+
+        let graph = DependencyGraph::from_entities(&entities);
+        let path = graph.find_path(&a_id, &c_id);
+
+        assert!(path.is_some());
+        let path = path.unwrap();
+        assert_eq!(path.len(), 3);
+        assert_eq!(path[0], a_id);
+        assert_eq!(path[1], b_id);
+        assert_eq!(path[2], c_id);
+    }
+
+    #[test]
+    fn test_find_path_no_connection() {
+        let mut entities: HashMap<String, Entity> = HashMap::new();
+
+        // A and B are not connected
+        let entity_a = create_entity("A", EntityType::Function, "/src/a.ts", vec![]);
+        let a_id = entity_a.id.clone();
+        entities.insert(entity_a.id.clone(), entity_a);
+
+        let entity_b = create_entity("B", EntityType::Function, "/src/b.ts", vec![]);
+        let b_id = entity_b.id.clone();
+        entities.insert(entity_b.id.clone(), entity_b);
+
+        let graph = DependencyGraph::from_entities(&entities);
+        let path = graph.find_path(&a_id, &b_id);
+
+        assert!(path.is_none());
+    }
+
+    #[test]
+    fn test_find_path_handles_cycles() {
+        let mut entities: HashMap<String, Entity> = HashMap::new();
+
+        // Create cycle: A -> B -> C -> A, but find path A -> C
+        let entity_a = create_entity("A", EntityType::Function, "/src/a.ts", vec![]);
+        let a_id = entity_a.id.clone();
+        entities.insert(entity_a.id.clone(), entity_a);
+
+        let entity_b = create_entity("B", EntityType::Function, "/src/b.ts", vec![]);
+        let b_id = entity_b.id.clone();
+        entities.insert(entity_b.id.clone(), entity_b);
+
+        let entity_c = create_entity("C", EntityType::Function, "/src/c.ts", vec![]);
+        let c_id = entity_c.id.clone();
+        entities.insert(entity_c.id.clone(), entity_c);
+
+        let import_b = ImportInfo::new("B".to_string(), "/src/b.ts".to_string());
+        let import_c = ImportInfo::new("C".to_string(), "/src/c.ts".to_string());
+        let import_a = ImportInfo::new("A".to_string(), "/src/a.ts".to_string());
+
+        entities.get_mut(&a_id).unwrap().deps = std::rc::Rc::new(vec![import_b]);
+        entities.get_mut(&b_id).unwrap().deps = std::rc::Rc::new(vec![import_c]);
+        entities.get_mut(&c_id).unwrap().deps = std::rc::Rc::new(vec![import_a]);
+
+        let graph = DependencyGraph::from_entities(&entities);
+        let path = graph.find_path(&a_id, &c_id);
+
+        assert!(path.is_some());
+        let path = path.unwrap();
+        assert_eq!(path.len(), 3);
+        assert_eq!(path[0], a_id);
+        assert_eq!(path[1], b_id);
+        assert_eq!(path[2], c_id);
+    }
+
+    #[test]
+    fn test_find_all_paths_same_entity() {
+        let mut entities: HashMap<String, Entity> = HashMap::new();
+        let entity = create_entity("A", EntityType::Function, "/src/a.ts", vec![]);
+        let a_id = entity.id.clone();
+        entities.insert(entity.id.clone(), entity);
+
+        let graph = DependencyGraph::from_entities(&entities);
+        let paths = graph.find_all_paths(&a_id, &a_id, 100, 100);
+
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0], vec![a_id]);
+    }
+
+    #[test]
+    fn test_find_all_paths_single_path() {
+        let mut entities: HashMap<String, Entity> = HashMap::new();
+
+        // A -> B -> C chain
+        let entity_c = create_entity("C", EntityType::Function, "/src/c.ts", vec![]);
+        let c_id = entity_c.id.clone();
+        entities.insert(entity_c.id.clone(), entity_c);
+
+        let import_c = ImportInfo::new("C".to_string(), "/src/c.ts".to_string());
+        let entity_b = create_entity("B", EntityType::Function, "/src/b.ts", vec![import_c]);
+        let b_id = entity_b.id.clone();
+        entities.insert(entity_b.id.clone(), entity_b);
+
+        let import_b = ImportInfo::new("B".to_string(), "/src/b.ts".to_string());
+        let entity_a = create_entity("A", EntityType::Function, "/src/a.ts", vec![import_b]);
+        let a_id = entity_a.id.clone();
+        entities.insert(entity_a.id.clone(), entity_a);
+
+        let graph = DependencyGraph::from_entities(&entities);
+        let paths = graph.find_all_paths(&a_id, &c_id, 100, 100);
+
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0].len(), 3);
+        assert_eq!(paths[0][0], a_id);
+        assert_eq!(paths[0][1], b_id);
+        assert_eq!(paths[0][2], c_id);
+    }
+
+    #[test]
+    fn test_find_all_paths_multiple_paths() {
+        let mut entities: HashMap<String, Entity> = HashMap::new();
+
+        // Create diamond: A -> B -> D and A -> C -> D
+        let entity_d = create_entity("D", EntityType::Function, "/src/d.ts", vec![]);
+        let d_id = entity_d.id.clone();
+        entities.insert(entity_d.id.clone(), entity_d);
+
+        let import_d = ImportInfo::new("D".to_string(), "/src/d.ts".to_string());
+        let entity_b = create_entity("B", EntityType::Function, "/src/b.ts", vec![import_d.clone()]);
+        let b_id = entity_b.id.clone();
+        entities.insert(entity_b.id.clone(), entity_b);
+
+        let entity_c = create_entity("C", EntityType::Function, "/src/c.ts", vec![import_d]);
+        let c_id = entity_c.id.clone();
+        entities.insert(entity_c.id.clone(), entity_c);
+
+        let import_b = ImportInfo::new("B".to_string(), "/src/b.ts".to_string());
+        let import_c = ImportInfo::new("C".to_string(), "/src/c.ts".to_string());
+        let entity_a = create_entity("A", EntityType::Function, "/src/a.ts", vec![import_b, import_c]);
+        let a_id = entity_a.id.clone();
+        entities.insert(entity_a.id.clone(), entity_a);
+
+        let graph = DependencyGraph::from_entities(&entities);
+        let paths = graph.find_all_paths(&a_id, &d_id, 100, 100);
+
+        assert_eq!(paths.len(), 2);
+
+        // Both paths should have length 3
+        for path in &paths {
+            assert_eq!(path.len(), 3);
+            assert_eq!(path[0], a_id);
+            assert_eq!(path[2], d_id);
+        }
+
+        // One path goes through B, other through C
+        let middle_nodes: Vec<&String> = paths.iter().map(|p| &p[1]).collect();
+        assert!(middle_nodes.contains(&&b_id));
+        assert!(middle_nodes.contains(&&c_id));
+    }
+
+    #[test]
+    fn test_find_all_paths_no_path() {
+        let mut entities: HashMap<String, Entity> = HashMap::new();
+
+        // A and B are not connected
+        let entity_a = create_entity("A", EntityType::Function, "/src/a.ts", vec![]);
+        let a_id = entity_a.id.clone();
+        entities.insert(entity_a.id.clone(), entity_a);
+
+        let entity_b = create_entity("B", EntityType::Function, "/src/b.ts", vec![]);
+        let b_id = entity_b.id.clone();
+        entities.insert(entity_b.id.clone(), entity_b);
+
+        let graph = DependencyGraph::from_entities(&entities);
+        let paths = graph.find_all_paths(&a_id, &b_id, 100, 100);
+
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn test_find_all_paths_handles_cycles() {
+        let mut entities: HashMap<String, Entity> = HashMap::new();
+
+        // Create: A -> B -> C, A -> C (diamond with potential cycle)
+        let entity_c = create_entity("C", EntityType::Function, "/src/c.ts", vec![]);
+        let c_id = entity_c.id.clone();
+        entities.insert(entity_c.id.clone(), entity_c);
+
+        let import_c = ImportInfo::new("C".to_string(), "/src/c.ts".to_string());
+        let entity_b = create_entity("B", EntityType::Function, "/src/b.ts", vec![import_c.clone()]);
+        entities.insert(entity_b.id.clone(), entity_b);
+
+        let import_b = ImportInfo::new("B".to_string(), "/src/b.ts".to_string());
+        let entity_a = create_entity("A", EntityType::Function, "/src/a.ts", vec![import_b, import_c]);
+        let a_id = entity_a.id.clone();
+        entities.insert(entity_a.id.clone(), entity_a);
+
+        let graph = DependencyGraph::from_entities(&entities);
+        let paths = graph.find_all_paths(&a_id, &c_id, 100, 100);
+
+        // Should find both A -> B -> C and A -> C
+        assert_eq!(paths.len(), 2);
+
+        let path_lengths: Vec<usize> = paths.iter().map(|p| p.len()).collect();
+        assert!(path_lengths.contains(&2)); // A -> C
+        assert!(path_lengths.contains(&3)); // A -> B -> C
+    }
+
+    #[test]
+    fn test_find_all_paths_respects_max_limit() {
+        let mut entities: HashMap<String, Entity> = HashMap::new();
+
+        // Create diamond: A -> B -> D and A -> C -> D (2 paths)
+        let entity_d = create_entity("D", EntityType::Function, "/src/d.ts", vec![]);
+        let d_id = entity_d.id.clone();
+        entities.insert(entity_d.id.clone(), entity_d);
+
+        let import_d = ImportInfo::new("D".to_string(), "/src/d.ts".to_string());
+        let entity_b = create_entity("B", EntityType::Function, "/src/b.ts", vec![import_d.clone()]);
+        entities.insert(entity_b.id.clone(), entity_b);
+
+        let entity_c = create_entity("C", EntityType::Function, "/src/c.ts", vec![import_d]);
+        entities.insert(entity_c.id.clone(), entity_c);
+
+        let import_b = ImportInfo::new("B".to_string(), "/src/b.ts".to_string());
+        let import_c = ImportInfo::new("C".to_string(), "/src/c.ts".to_string());
+        let entity_a = create_entity("A", EntityType::Function, "/src/a.ts", vec![import_b, import_c]);
+        let a_id = entity_a.id.clone();
+        entities.insert(entity_a.id.clone(), entity_a);
+
+        let graph = DependencyGraph::from_entities(&entities);
+
+        // Limit to 1 path
+        let paths = graph.find_all_paths(&a_id, &d_id, 1, 100);
+        assert_eq!(paths.len(), 1);
+
+        // Allow all paths
+        let paths = graph.find_all_paths(&a_id, &d_id, 100, 100);
+        assert_eq!(paths.len(), 2);
+    }
+
+    #[test]
+    fn test_find_all_paths_respects_max_depth() {
+        let mut entities: HashMap<String, Entity> = HashMap::new();
+
+        // Create chain: A -> B -> C -> D (4 nodes, path length 4)
+        let entity_d = create_entity("D", EntityType::Function, "/src/d.ts", vec![]);
+        let d_id = entity_d.id.clone();
+        entities.insert(entity_d.id.clone(), entity_d);
+
+        let import_d = ImportInfo::new("D".to_string(), "/src/d.ts".to_string());
+        let entity_c = create_entity("C", EntityType::Function, "/src/c.ts", vec![import_d]);
+        entities.insert(entity_c.id.clone(), entity_c);
+
+        let import_c = ImportInfo::new("C".to_string(), "/src/c.ts".to_string());
+        let entity_b = create_entity("B", EntityType::Function, "/src/b.ts", vec![import_c]);
+        entities.insert(entity_b.id.clone(), entity_b);
+
+        let import_b = ImportInfo::new("B".to_string(), "/src/b.ts".to_string());
+        let entity_a = create_entity("A", EntityType::Function, "/src/a.ts", vec![import_b]);
+        let a_id = entity_a.id.clone();
+        entities.insert(entity_a.id.clone(), entity_a);
+
+        let graph = DependencyGraph::from_entities(&entities);
+
+        // Depth 3 should not find the path (A -> B -> C -> D is length 4)
+        let paths = graph.find_all_paths(&a_id, &d_id, 100, 3);
+        assert!(paths.is_empty());
+
+        // Depth 4 should find the path
+        let paths = graph.find_all_paths(&a_id, &d_id, 100, 4);
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0].len(), 4);
     }
 }

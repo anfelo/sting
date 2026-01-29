@@ -13,6 +13,7 @@ pub(crate) enum EntityType {
     Interface,
     Function,
     Const,
+    Worker,
 }
 
 impl std::fmt::Display for EntityType {
@@ -25,6 +26,7 @@ impl std::fmt::Display for EntityType {
             EntityType::Interface => write!(f, "interface"),
             EntityType::Function => write!(f, "function"),
             EntityType::Const => write!(f, "const"),
+            EntityType::Worker => write!(f, "worker"),
         }
     }
 }

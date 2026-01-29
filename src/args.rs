@@ -19,6 +19,8 @@ pub enum Commands {
     Graph(GraphArgs),
     /// Lists all entities affected by git changes compared to a base reference
     Affected(AffectedArgs),
+    /// Finds the dependency chain between two entities
+    Chain(ChainArgs),
 }
 
 #[derive(Args, Debug)]
@@ -63,4 +65,25 @@ pub struct AffectedArgs {
     /// Output full paths to test files related to affected entities
     #[arg(long, default_value = "false", conflicts_with = "paths")]
     pub tests: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct ChainArgs {
+    /// Path to the root of the nx project
+    pub path: String,
+    /// Starting entity name to find chain from
+    #[arg(long)]
+    pub start: String,
+    /// Ending entity name to find chain to
+    #[arg(long)]
+    pub end: String,
+    /// Only return the shortest path (default: return all paths)
+    #[arg(long, default_value = "false")]
+    pub shortest: bool,
+    /// Maximum number of paths to return (default: 100)
+    #[arg(long, default_value = "100")]
+    pub max_paths: usize,
+    /// Maximum path depth/length to explore (default: 10)
+    #[arg(long, default_value = "10")]
+    pub max_depth: usize,
 }

@@ -24,6 +24,10 @@ static LAZY_IMPORT_RE: LazyLock<Regex> = LazyLock::new(|| {
         .unwrap()
 });
 
+static WORKER_IMPORT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"new\s+Worker\s*\(\s*new\s+URL\s*\(\s*['"]([^'"]+)['"]"#).unwrap()
+});
+
 pub(crate) struct FileParseResult {
     pub entities: Vec<Entity>,
     pub imports: Vec<ImportInfo>,
@@ -48,6 +52,19 @@ impl<'a> Parser<'a> {
         // Extract all imports from the file (shared by all entities in this file)
         let imports = self.extract_imports(&content, file_path);
         let deps = Rc::new(imports.clone());
+
+        // If this is a worker file, treat the entire file as a single Worker entity
+        if is_worker_file(file_path) {
+            if let Some(worker_name) = worker_filename_to_entity_name(file_path) {
+                entities.push(Entity::new(
+                    worker_name,
+                    EntityType::Worker,
+                    file_path.to_string(),
+                    Rc::clone(&deps),
+                ));
+                return Ok(FileParseResult { entities, imports });
+            }
+        }
 
         // Strip comments before parsing exports
         let content_without_comments = strip_comments(&content);
@@ -228,6 +245,28 @@ impl<'a> Parser<'a> {
             }
         }
 
+        // Handle Worker imports: new Worker(new URL('...'))
+        for cap in WORKER_IMPORT_RE.captures_iter(&normalized_content) {
+            let import_path = cap[1].to_string();
+
+            // Worker paths may or may not have extensions, try .worker.ts first
+            let worker_path = if import_path.ends_with(".worker") {
+                format!("{}.ts", import_path)
+            } else if !import_path.ends_with(".ts") {
+                format!("{}.worker.ts", import_path)
+            } else {
+                import_path.clone()
+            };
+
+            if let Some(resolved_path) =
+                resolve_import_path(file_path, &worker_path, self.root_path)
+            {
+                if let Some(worker_name) = worker_filename_to_entity_name(&resolved_path) {
+                    imports.push(ImportInfo::new(worker_name, resolved_path));
+                }
+            }
+        }
+
         imports
     }
 }
@@ -388,4 +427,37 @@ fn is_entity_used_locally(content: &str, entity_name: &str) -> bool {
 
     let matches: Vec<_> = re.find_iter(content).collect();
     matches.len() > 1
+}
+
+/// Checks if a file path is a worker file (ends with .worker.ts)
+fn is_worker_file(file_path: &str) -> bool {
+    file_path.ends_with(".worker.ts")
+}
+
+/// Converts a worker filename to PascalCase + "Worker" suffix.
+/// Examples:
+///   - "planner-overview.worker.ts" -> "PlannerOverviewWorker"
+///   - "my_worker.worker.ts" -> "MyWorkerWorker"
+///   - "simple.worker.ts" -> "SimpleWorker"
+pub(crate) fn worker_filename_to_entity_name(file_path: &str) -> Option<String> {
+    let path = Path::new(file_path);
+    let file_name = path.file_name()?.to_str()?;
+
+    // Strip the .worker.ts suffix
+    let base_name = file_name.strip_suffix(".worker.ts")?;
+
+    // Convert kebab-case and snake_case to PascalCase
+    let pascal_case: String = base_name
+        .split(|c| c == '-' || c == '_')
+        .filter(|s| !s.is_empty())
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().chain(chars).collect::<String>(),
+                None => String::new(),
+            }
+        })
+        .collect();
+
+    Some(format!("{}Worker", pascal_case))
 }

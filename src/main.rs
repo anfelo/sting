@@ -56,6 +56,19 @@ fn main() -> Result<()> {
                 },
             )?;
         }
+        Commands::Chain(args) => {
+            let path = canonicalize_path(&args.path)?;
+
+            sting::chain(
+                &path,
+                &args.start,
+                &args.end,
+                args.shortest,
+                args.max_paths,
+                args.max_depth,
+            )
+            .with_context(|| format!("Unable to find chain in path: {}", path.display()))?;
+        }
     }
 
     Ok(())
