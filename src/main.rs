@@ -69,6 +69,12 @@ fn main() -> Result<()> {
             )
             .with_context(|| format!("Unable to find chain in path: {}", path.display()))?;
         }
+        Commands::Cycles(args) => {
+            let path = canonicalize_path(&args.path)?;
+
+            sting::cycles(&path, args.max_cycles, args.max_depth)
+                .with_context(|| format!("Unable to detect cycles in path: {}", path.display()))?;
+        }
     }
 
     Ok(())

@@ -488,6 +488,58 @@ pub fn chain(
     Ok(())
 }
 
+pub fn cycles(root_path: &Path, max_cycles: usize, max_depth: usize) -> Result<()> {
+    let result = scan_and_parse_files(root_path, false)?;
+    let graph = DependencyGraph::from_entities(&result.entities);
+
+    let cycles = graph.find_cycles(max_cycles, max_depth);
+
+    if cycles.is_empty() {
+        println!("No circular dependencies detected.");
+        return Ok(());
+    }
+
+    println!("Found {} circular dependencies:\n", cycles.len());
+
+    for (i, cycle) in cycles.iter().enumerate() {
+        println!("Cycle {} ({} entities):", i + 1, cycle.len());
+
+        // Build the cycle display with entity names
+        let names: Vec<String> = cycle
+            .iter()
+            .filter_map(|id| result.entities.get(id).map(|e| e.name.clone()))
+            .collect();
+
+        // Add first name again to show the cycle closes
+        let mut display_names = names.clone();
+        if let Some(first) = names.first() {
+            display_names.push(first.clone());
+        }
+        println!("  {}", display_names.join(" -> "));
+
+        // Show file paths
+        println!("  Files:");
+        for id in cycle {
+            if let Some(entity) = result.entities.get(id) {
+                println!("    {}", entity.file_path);
+            }
+        }
+        println!("---");
+    }
+
+    let limited = cycles.len() >= max_cycles;
+    if limited {
+        eprintln!(
+            "Note: Output limited to {} cycles. Use --max-cycles to adjust.",
+            max_cycles
+        );
+    }
+
+    println!("\nSummary: {} cycles detected", cycles.len());
+
+    Ok(())
+}
+
 fn print_affected_entity(entity: &Entity, reason: &str) {
     println!("Name: {}", entity.name);
     println!("Type: {}", entity.entity_type);

@@ -226,6 +226,133 @@ impl DependencyGraph {
         visited.remove(current);
     }
 
+    /// Find all circular dependencies (cycles) in the graph.
+    /// Uses DFS with node coloring to detect back-edges.
+    /// Returns cycles as Vec of entity ID sequences, where the last ID connects back to the first.
+    /// Stops early if max_cycles is reached or cycle length exceeds max_depth.
+    pub fn find_cycles(&self, max_cycles: usize, max_depth: usize) -> Vec<Vec<String>> {
+        // Build forward adjacency list: source -> [targets]
+        let mut adjacency: HashMap<String, Vec<String>> = HashMap::new();
+        let mut all_nodes: HashSet<String> = HashSet::new();
+
+        for edge in &self.edges {
+            adjacency
+                .entry(edge.source.clone())
+                .or_default()
+                .push(edge.target.clone());
+            all_nodes.insert(edge.source.clone());
+            all_nodes.insert(edge.target.clone());
+        }
+
+        // Node states: 0 = white (unvisited), 1 = gray (in stack), 2 = black (done)
+        let mut state: HashMap<String, u8> = HashMap::new();
+        let mut cycles: Vec<Vec<String>> = Vec::new();
+        let mut seen_cycles: HashSet<String> = HashSet::new();
+
+        for start_node in &all_nodes {
+            if cycles.len() >= max_cycles {
+                break;
+            }
+            if state.get(start_node).copied().unwrap_or(0) == 0 {
+                let mut stack: Vec<String> = Vec::new();
+                self.dfs_find_cycles(
+                    start_node,
+                    &adjacency,
+                    &mut state,
+                    &mut stack,
+                    &mut cycles,
+                    &mut seen_cycles,
+                    max_cycles,
+                    max_depth,
+                );
+            }
+        }
+
+        cycles
+    }
+
+    fn dfs_find_cycles(
+        &self,
+        node: &str,
+        adjacency: &HashMap<String, Vec<String>>,
+        state: &mut HashMap<String, u8>,
+        stack: &mut Vec<String>,
+        cycles: &mut Vec<Vec<String>>,
+        seen_cycles: &mut HashSet<String>,
+        max_cycles: usize,
+        max_depth: usize,
+    ) {
+        if cycles.len() >= max_cycles {
+            return;
+        }
+
+        if stack.len() >= max_depth {
+            return;
+        }
+
+        state.insert(node.to_string(), 1); // gray
+        stack.push(node.to_string());
+
+        if let Some(neighbors) = adjacency.get(node) {
+            for neighbor in neighbors {
+                if cycles.len() >= max_cycles {
+                    break;
+                }
+
+                let neighbor_state = state.get(neighbor).copied().unwrap_or(0);
+
+                if neighbor_state == 1 {
+                    // Found a cycle - extract it from stack
+                    if let Some(cycle_start) = stack.iter().position(|n| n == neighbor) {
+                        let cycle: Vec<String> = stack[cycle_start..].to_vec();
+
+                        // Normalize cycle for deduplication (start from smallest ID)
+                        let normalized = self.normalize_cycle(&cycle);
+                        let cycle_key = normalized.join(",");
+
+                        if !seen_cycles.contains(&cycle_key) {
+                            seen_cycles.insert(cycle_key);
+                            cycles.push(cycle);
+                        }
+                    }
+                } else if neighbor_state == 0 {
+                    self.dfs_find_cycles(
+                        neighbor,
+                        adjacency,
+                        state,
+                        stack,
+                        cycles,
+                        seen_cycles,
+                        max_cycles,
+                        max_depth,
+                    );
+                }
+            }
+        }
+
+        stack.pop();
+        state.insert(node.to_string(), 2); // black
+    }
+
+    /// Normalize a cycle by rotating it to start from the lexicographically smallest ID.
+    /// This ensures the same cycle found from different starting points is deduplicated.
+    fn normalize_cycle(&self, cycle: &[String]) -> Vec<String> {
+        if cycle.is_empty() {
+            return Vec::new();
+        }
+
+        let min_pos = cycle
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, id)| id.as_str())
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+
+        let mut normalized: Vec<String> = cycle[min_pos..].to_vec();
+        normalized.extend_from_slice(&cycle[..min_pos]);
+        normalized
+    }
+
     /// Find all entities that consume (depend on) the given target IDs.
     /// If transitive is true, performs BFS to find all transitive consumers.
     /// Returns a set of consumer entity IDs (excluding the original target IDs).
@@ -905,5 +1032,196 @@ mod tests {
         let paths = graph.find_all_paths(&a_id, &d_id, 100, 4);
         assert_eq!(paths.len(), 1);
         assert_eq!(paths[0].len(), 4);
+    }
+
+    #[test]
+    fn test_find_cycles_no_cycles() {
+        let mut entities: HashMap<String, Entity> = HashMap::new();
+
+        // A -> B -> C (no cycles)
+        let entity_c = create_entity("C", EntityType::Function, "/src/c.ts", vec![]);
+        entities.insert(entity_c.id.clone(), entity_c);
+
+        let import_c = ImportInfo::new("C".to_string(), "/src/c.ts".to_string());
+        let entity_b = create_entity("B", EntityType::Function, "/src/b.ts", vec![import_c]);
+        entities.insert(entity_b.id.clone(), entity_b);
+
+        let import_b = ImportInfo::new("B".to_string(), "/src/b.ts".to_string());
+        let entity_a = create_entity("A", EntityType::Function, "/src/a.ts", vec![import_b]);
+        entities.insert(entity_a.id.clone(), entity_a);
+
+        let graph = DependencyGraph::from_entities(&entities);
+        let cycles = graph.find_cycles(100, 100);
+
+        assert!(cycles.is_empty());
+    }
+
+    #[test]
+    fn test_find_cycles_simple_cycle() {
+        let mut entities: HashMap<String, Entity> = HashMap::new();
+
+        // Create A -> B -> A cycle
+        let entity_a = create_entity("A", EntityType::Function, "/src/a.ts", vec![]);
+        let a_id = entity_a.id.clone();
+        entities.insert(entity_a.id.clone(), entity_a);
+
+        let entity_b = create_entity("B", EntityType::Function, "/src/b.ts", vec![]);
+        let b_id = entity_b.id.clone();
+        entities.insert(entity_b.id.clone(), entity_b);
+
+        let import_b = ImportInfo::new("B".to_string(), "/src/b.ts".to_string());
+        let import_a = ImportInfo::new("A".to_string(), "/src/a.ts".to_string());
+
+        entities.get_mut(&a_id).unwrap().deps = std::rc::Rc::new(vec![import_b]);
+        entities.get_mut(&b_id).unwrap().deps = std::rc::Rc::new(vec![import_a]);
+
+        let graph = DependencyGraph::from_entities(&entities);
+        let cycles = graph.find_cycles(100, 100);
+
+        assert_eq!(cycles.len(), 1);
+        assert_eq!(cycles[0].len(), 2);
+    }
+
+    #[test]
+    fn test_find_cycles_three_node_cycle() {
+        let mut entities: HashMap<String, Entity> = HashMap::new();
+
+        // Create A -> B -> C -> A cycle
+        let entity_a = create_entity("A", EntityType::Function, "/src/a.ts", vec![]);
+        let a_id = entity_a.id.clone();
+        entities.insert(entity_a.id.clone(), entity_a);
+
+        let entity_b = create_entity("B", EntityType::Function, "/src/b.ts", vec![]);
+        let b_id = entity_b.id.clone();
+        entities.insert(entity_b.id.clone(), entity_b);
+
+        let entity_c = create_entity("C", EntityType::Function, "/src/c.ts", vec![]);
+        let c_id = entity_c.id.clone();
+        entities.insert(entity_c.id.clone(), entity_c);
+
+        let import_b = ImportInfo::new("B".to_string(), "/src/b.ts".to_string());
+        let import_c = ImportInfo::new("C".to_string(), "/src/c.ts".to_string());
+        let import_a = ImportInfo::new("A".to_string(), "/src/a.ts".to_string());
+
+        entities.get_mut(&a_id).unwrap().deps = std::rc::Rc::new(vec![import_b]);
+        entities.get_mut(&b_id).unwrap().deps = std::rc::Rc::new(vec![import_c]);
+        entities.get_mut(&c_id).unwrap().deps = std::rc::Rc::new(vec![import_a]);
+
+        let graph = DependencyGraph::from_entities(&entities);
+        let cycles = graph.find_cycles(100, 100);
+
+        assert_eq!(cycles.len(), 1);
+        assert_eq!(cycles[0].len(), 3);
+    }
+
+    #[test]
+    fn test_find_cycles_respects_max_cycles() {
+        let mut entities: HashMap<String, Entity> = HashMap::new();
+
+        // Create two separate cycles: A -> B -> A and C -> D -> C
+        let entity_a = create_entity("A", EntityType::Function, "/src/a.ts", vec![]);
+        let a_id = entity_a.id.clone();
+        entities.insert(entity_a.id.clone(), entity_a);
+
+        let entity_b = create_entity("B", EntityType::Function, "/src/b.ts", vec![]);
+        let b_id = entity_b.id.clone();
+        entities.insert(entity_b.id.clone(), entity_b);
+
+        let entity_c = create_entity("C", EntityType::Function, "/src/c.ts", vec![]);
+        let c_id = entity_c.id.clone();
+        entities.insert(entity_c.id.clone(), entity_c);
+
+        let entity_d = create_entity("D", EntityType::Function, "/src/d.ts", vec![]);
+        let d_id = entity_d.id.clone();
+        entities.insert(entity_d.id.clone(), entity_d);
+
+        let import_b = ImportInfo::new("B".to_string(), "/src/b.ts".to_string());
+        let import_a = ImportInfo::new("A".to_string(), "/src/a.ts".to_string());
+        let import_d = ImportInfo::new("D".to_string(), "/src/d.ts".to_string());
+        let import_c = ImportInfo::new("C".to_string(), "/src/c.ts".to_string());
+
+        entities.get_mut(&a_id).unwrap().deps = std::rc::Rc::new(vec![import_b]);
+        entities.get_mut(&b_id).unwrap().deps = std::rc::Rc::new(vec![import_a]);
+        entities.get_mut(&c_id).unwrap().deps = std::rc::Rc::new(vec![import_d]);
+        entities.get_mut(&d_id).unwrap().deps = std::rc::Rc::new(vec![import_c]);
+
+        let graph = DependencyGraph::from_entities(&entities);
+
+        // Limit to 1 cycle
+        let cycles = graph.find_cycles(1, 100);
+        assert_eq!(cycles.len(), 1);
+
+        // Allow all cycles
+        let cycles = graph.find_cycles(100, 100);
+        assert_eq!(cycles.len(), 2);
+    }
+
+    #[test]
+    fn test_find_cycles_respects_max_depth() {
+        let mut entities: HashMap<String, Entity> = HashMap::new();
+
+        // Create A -> B -> C -> D -> A (4 node cycle)
+        let entity_a = create_entity("A", EntityType::Function, "/src/a.ts", vec![]);
+        let a_id = entity_a.id.clone();
+        entities.insert(entity_a.id.clone(), entity_a);
+
+        let entity_b = create_entity("B", EntityType::Function, "/src/b.ts", vec![]);
+        let b_id = entity_b.id.clone();
+        entities.insert(entity_b.id.clone(), entity_b);
+
+        let entity_c = create_entity("C", EntityType::Function, "/src/c.ts", vec![]);
+        let c_id = entity_c.id.clone();
+        entities.insert(entity_c.id.clone(), entity_c);
+
+        let entity_d = create_entity("D", EntityType::Function, "/src/d.ts", vec![]);
+        let d_id = entity_d.id.clone();
+        entities.insert(entity_d.id.clone(), entity_d);
+
+        let import_b = ImportInfo::new("B".to_string(), "/src/b.ts".to_string());
+        let import_c = ImportInfo::new("C".to_string(), "/src/c.ts".to_string());
+        let import_d = ImportInfo::new("D".to_string(), "/src/d.ts".to_string());
+        let import_a = ImportInfo::new("A".to_string(), "/src/a.ts".to_string());
+
+        entities.get_mut(&a_id).unwrap().deps = std::rc::Rc::new(vec![import_b]);
+        entities.get_mut(&b_id).unwrap().deps = std::rc::Rc::new(vec![import_c]);
+        entities.get_mut(&c_id).unwrap().deps = std::rc::Rc::new(vec![import_d]);
+        entities.get_mut(&d_id).unwrap().deps = std::rc::Rc::new(vec![import_a]);
+
+        let graph = DependencyGraph::from_entities(&entities);
+
+        // Depth 3 should not find the 4-node cycle
+        let cycles = graph.find_cycles(100, 3);
+        assert!(cycles.is_empty());
+
+        // Depth 4 should find the cycle
+        let cycles = graph.find_cycles(100, 4);
+        assert_eq!(cycles.len(), 1);
+        assert_eq!(cycles[0].len(), 4);
+    }
+
+    #[test]
+    fn test_find_cycles_deduplicates() {
+        let mut entities: HashMap<String, Entity> = HashMap::new();
+
+        // Create A -> B -> A cycle - should only find it once, not twice
+        let entity_a = create_entity("A", EntityType::Function, "/src/a.ts", vec![]);
+        let a_id = entity_a.id.clone();
+        entities.insert(entity_a.id.clone(), entity_a);
+
+        let entity_b = create_entity("B", EntityType::Function, "/src/b.ts", vec![]);
+        let b_id = entity_b.id.clone();
+        entities.insert(entity_b.id.clone(), entity_b);
+
+        let import_b = ImportInfo::new("B".to_string(), "/src/b.ts".to_string());
+        let import_a = ImportInfo::new("A".to_string(), "/src/a.ts".to_string());
+
+        entities.get_mut(&a_id).unwrap().deps = std::rc::Rc::new(vec![import_b]);
+        entities.get_mut(&b_id).unwrap().deps = std::rc::Rc::new(vec![import_a]);
+
+        let graph = DependencyGraph::from_entities(&entities);
+        let cycles = graph.find_cycles(100, 100);
+
+        // The cycle A -> B -> A is the same as B -> A -> B, should only appear once
+        assert_eq!(cycles.len(), 1);
     }
 }

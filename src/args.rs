@@ -21,6 +21,8 @@ pub enum Commands {
     Affected(AffectedArgs),
     /// Finds the dependency chain between two entities
     Chain(ChainArgs),
+    /// Detects circular dependencies in the project
+    Cycles(CyclesArgs),
 }
 
 #[derive(Args, Debug)]
@@ -84,6 +86,18 @@ pub struct ChainArgs {
     #[arg(long, default_value = "100")]
     pub max_paths: usize,
     /// Maximum path depth/length to explore (default: 10)
+    #[arg(long, default_value = "10")]
+    pub max_depth: usize,
+}
+
+#[derive(Args, Debug)]
+pub struct CyclesArgs {
+    /// Path to the root of the nx project
+    pub path: String,
+    /// Maximum number of cycles to report (default: 100)
+    #[arg(long, default_value = "100")]
+    pub max_cycles: usize,
+    /// Maximum cycle length to detect (default: 10)
     #[arg(long, default_value = "10")]
     pub max_depth: usize,
 }
